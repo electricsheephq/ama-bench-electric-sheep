@@ -1,0 +1,12 @@
+# REQUIRED: set CORTEX_BASE_URL env var (e.g., export CORTEX_BASE_URL=http://127.0.0.1:9100)
+# bench-runner.sh sets this automatically for local benchmark runs.
+base_url: ""
+# REQUIRED: set CORTEX_API_KEY env var (e.g., export CORTEX_API_KEY=bench-local)
+# bench-runner.sh sets this automatically for local benchmark runs.
+api_key: ""
+owner_id: ama_bench
+retrieve_mode: auto
+token_budget: 2500
+top_k: 8
+scope_entity_only: true
+timeout_sec: 600

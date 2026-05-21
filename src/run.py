@@ -85,10 +85,13 @@ Examples:
 
     # Sampling / filtering configuration
     parser.add_argument("--samples", type=int, default=None,
-                        help="Randomly sample N episodes from the dataset. Cannot be used together with --domains")
+                        help="Randomly sample N episodes from the dataset. Mutually exclusive with --domains / --episode-ids.")
     parser.add_argument("--domains", type=str, default=None,
                         help="Comma-separated list of domains to evaluate (e.g. 'embodied_ai,software_engineer'). "
-                             "Cannot be used together with --samples")
+                             "Mutually exclusive with --samples / --episode-ids.")
+    parser.add_argument("--episode-ids", type=str, default=None,
+                        help="Comma-separated list of episode_id values to evaluate (e.g. '30,31,32'). "
+                             "Mutually exclusive with --samples / --domains.")
 
     # Output configuration
     parser.add_argument("--output-dir", type=str, default="results",
@@ -96,9 +99,12 @@ Examples:
 
     args = parser.parse_args()
 
-    # Validate mutual exclusivity of --samples and --domains
-    if args.samples is not None and args.domains is not None:
-        parser.error("--samples and --domains cannot be used at the same time. Use one or the other.")
+    # Validate mutual exclusivity of --samples / --domains / --episode-ids
+    _filters_set = sum(
+        x is not None for x in (args.samples, args.domains, args.episode_ids)
+    )
+    if _filters_set > 1:
+        parser.error("--samples, --domains, and --episode-ids are mutually exclusive.")
 
     # Auto-configure test file based on test_dir and subset
     if args.test_file is None:
@@ -182,16 +188,23 @@ Examples:
         import atexit
         atexit.register(embedding_engine.shutdown)
 
-    # Load and filter episodes (for --samples or --domains)
+    # Load and filter episodes (for --samples / --domains / --episode-ids)
     filtered_episodes = None
-    if args.samples is not None or args.domains is not None:
+    if args.samples is not None or args.domains is not None or args.episode_ids is not None:
         import random
         all_episodes = []
         with open(args.test_file, 'r', encoding='utf-8') as f:
             for line in f:
                 all_episodes.append(json.loads(line.strip()))
 
-        if args.domains is not None:
+        if args.episode_ids is not None:
+            target_ids = {str(i).strip() for i in args.episode_ids.split(',') if str(i).strip()}
+            filtered_episodes = [ep for ep in all_episodes if str(ep.get('episode_id', '')) in target_ids]
+            missing = target_ids - {str(ep.get('episode_id', '')) for ep in filtered_episodes}
+            if missing:
+                parser.error(f"--episode-ids referenced ids not found in test file: {sorted(missing)}")
+            print(f"Filtering by episode-ids {sorted(target_ids)}: {len(all_episodes)} → {len(filtered_episodes)} episodes")
+        elif args.domains is not None:
             target_domains = {d.strip() for d in args.domains.split(',')}
             filtered_episodes = [ep for ep in all_episodes if ep.get('domain', '') in target_domains]
             print(f"Filtering by domains {target_domains}: {len(all_episodes)} → {len(filtered_episodes)} episodes")

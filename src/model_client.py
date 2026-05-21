@@ -108,6 +108,20 @@ class ModelClient:
                     return response.choices[0].message.content.strip()
 
                 elif self.provider == "openai":
+                    # gpt-5 family: hidden chain-of-thought tokens count against
+                    # max_completion_tokens, so the chat.completions path can
+                    # emit empty visible output even with a generous budget.
+                    # Use the Responses API with reasoning_effort=minimal, the
+                    # same convention as simpleqa / aa-lcr / Harbor parity.
+                    if self.model.startswith("gpt-5"):
+                        reasoning_effort = self.config.get("reasoning_effort", "minimal")
+                        response = self.client.responses.create(
+                            model=self.model,
+                            input=prompt,
+                            max_output_tokens=max_tokens,
+                            reasoning={"effort": reasoning_effort},
+                        )
+                        return (response.output_text or "").strip()
                     try:
                         response = self.client.chat.completions.create(
                             model=self.model,

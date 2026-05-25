@@ -19,6 +19,7 @@ AMA-Bench is a benchmark for evaluating agent memory on long-horizon agent traje
 - [📦 Dataset](#dataset)
 - [🚀 Quick Start](#quick-start)
 - [📊 Evaluation](#evaluation)
+- [🧪 Experiment Log](#experiment-log)
 - [🧩 Scripts](#scripts)
 - [🏆 Submit to Leaderboard](#submit-to-leaderboard)
 - [🏗️ Project Structure](#project-structure)
@@ -215,6 +216,16 @@ Qwen3-32B shows systematic leniency bias, particularly on:
 - **Claude-4.6**: ❌ INCORRECT (requires explicit mention of the workbench as the critical intermediate step)
 
 **Recommendations**: While Qwen3-32B achieves the highest accuracy, its leniency bias means it may accept incomplete answers. For critical evaluations, consider using Claude-4.6 as the reference judge or employing ensemble voting across multiple judges.
+
+---
+
+## 🧪 Experiment Log
+
+Full per-run logs (model outputs, judge outputs, and pipeline traces) for our **AMA-Bench / AMA-Agent** experiments are mirrored to Google Drive:
+
+📂 [AMA-Bench / AMA-Agent experiment logs](https://drive.google.com/drive/folders/1Fn-gTiOJoSAXgXdnHa3F0-lRfYVsrQyJ?usp=sharing)
+
+Use these to reproduce reported numbers, inspect raw judge decisions, or compare your own runs against ours.
 
 ---
 

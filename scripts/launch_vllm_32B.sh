@@ -4,6 +4,9 @@ set -e
 CONFIG="${1:-configs/qwen3-32B.yaml}"
 [ ! -f "$CONFIG" ] && echo "Config not found: $CONFIG" && exit 1
 
+VLLM_LOG="${VLLM_LOG:-logs/vllm_server.log}"
+mkdir -p "$(dirname "$VLLM_LOG")"
+
 # Parse all config at once
 read -r MODEL VLLM_HOST VLLM_PORT GPUS MAX_LEN TP_SIZE GPU_MEM_UTIL < <(python -c "
 import yaml
@@ -20,6 +23,7 @@ curl -sf "http://${VLLM_HOST}:${VLLM_PORT}/health" >/dev/null && \
 
 # Launch
 echo "Launching vLLM: $MODEL on GPU $GPUS at http://${VLLM_HOST}:${VLLM_PORT}"
+echo "vLLM log: $VLLM_LOG"
 CUDA_VISIBLE_DEVICES=$GPUS \
 VLLM_USE_DEEP_GEMM=0 \
 VLLM_DEEP_GEMM_WARMUP=skip \
@@ -27,7 +31,7 @@ nohup python -m vllm.entrypoints.openai.api_server \
     --model "$MODEL" --host "$VLLM_HOST" --port "$VLLM_PORT" \
     --max-model-len "$MAX_LEN" --tensor-parallel-size "$TP_SIZE" \
     --gpu-memory-utilization "$GPU_MEM_UTIL" \
-    > vllm_server.log 2>&1 &
+    > "$VLLM_LOG" 2>&1 &
 
 echo "PID: $! | Waiting for startup..."
 for i in {1..120}; do
@@ -35,4 +39,4 @@ for i in {1..120}; do
     sleep 2
 done
 
-echo "Timeout. Check vllm_server.log" && exit 1
+echo "Timeout. Check $VLLM_LOG" && exit 1

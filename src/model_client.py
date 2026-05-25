@@ -10,7 +10,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, asdict
 import yaml
 
-
 class ModelClient:
     """Unified client for different model providers."""
 
@@ -39,20 +38,22 @@ class ModelClient:
 
         # For vllm server type, override provider
         if server_type == "vllm":
-            self.provider = "vllm"
+            self.provider = "custom"
             # Use host/port from kwargs or config (support both 'host' and 'vllm_host' naming)
-            kwargs.setdefault('host', config.get('vllm_host') or config.get('host', 'localhost'))
-            kwargs.setdefault('port', config.get('vllm_port') or config.get('port', 8000))
+            host = config.get('vllm_host') or config.get('host', 'localhost')
+            port = config.get('vllm_port') or config.get('port', 8000)
+            config["base_url"] = f"http://{host}:{port}/v1"
 
         self._timeout = float(config.get('timeout', 600.0))
-        self.client = self._initialize_client(**kwargs)
+        self.client = self._initialize_client()
 
-    def _initialize_client(self, **kwargs):
+    def _initialize_client(self):
         """Initialize provider-specific client."""
-        if self.provider == "vllm":
+        if self.provider == "custom":
             from openai import OpenAI
-            base_url = f"http://{kwargs.get('host', 'localhost')}:{kwargs.get('port', 8000)}/v1"
-            return OpenAI(base_url=base_url, api_key="EMPTY", timeout=self._timeout)
+            base_url = self.config.get("base_url")
+            api_key = self.config.get("api_key", "EMPTY")
+            return OpenAI(base_url=base_url, api_key=api_key, timeout=self._timeout)
 
         elif self.provider == "openai":
             from openai import OpenAI
@@ -98,7 +99,7 @@ class ModelClient:
         attempt = 0
         while attempt < max_retries:
             try:
-                if self.provider in ["vllm", "deepseek"]:
+                if self.provider in ["custom", "deepseek"]:
                     response = self.client.chat.completions.create(
                         model=self.model,
                         messages=[{"role": "user", "content": prompt}],
@@ -108,6 +109,20 @@ class ModelClient:
                     return response.choices[0].message.content.strip()
 
                 elif self.provider == "openai":
+                    # gpt-5 family: hidden chain-of-thought tokens count against
+                    # max_completion_tokens, so the chat.completions path can
+                    # emit empty visible output even with a generous budget.
+                    # Use the Responses API with reasoning_effort=minimal, the
+                    # same convention as simpleqa / aa-lcr / Harbor parity.
+                    if self.model.startswith("gpt-5"):
+                        reasoning_effort = self.config.get("reasoning_effort", "minimal")
+                        response = self.client.responses.create(
+                            model=self.model,
+                            input=prompt,
+                            max_output_tokens=max_tokens,
+                            reasoning={"effort": reasoning_effort},
+                        )
+                        return (response.output_text or "").strip()
                     try:
                         response = self.client.chat.completions.create(
                             model=self.model,

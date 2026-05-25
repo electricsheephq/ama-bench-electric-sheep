@@ -35,11 +35,12 @@ AMA-Bench is a benchmark for evaluating agent memory on long-horizon agent traje
 
 ## 🗞️ News
 
+- ✅ **[2026-05]** 🎉 [AMA-Bench paper](https://arxiv.org/abs/2602.22769) accepted to **ICML 2026**!
 - ✅ **[2026-05]** 🤖 AMA-Agent code release
-- ✅ **[2026-03]** 🚀 [AMA-Hub](https://github.com/AMA-Bench/AMA-Hub) repo launched
-- ✅ **[2026-03]** 📄 [AMA-Bench paper](https://arxiv.org/abs/2602.22769) is accepted by ICLR 2026 Memory Agent workshop and released on arXiv!
-- ✅  **[2026-03]** 📦 [Dataset](https://huggingface.co/datasets/AMA-bench/AMA-bench) released on Hugging Face
-- ✅  **[2026-03]** 🏆 [Leaderboard](https://huggingface.co/spaces/AMA-bench/AMA-bench-Leaderboard) launched on Hugging Face Spaces
+- ✅ **[2026-03]** 🚀 repo launched
+- ✅ **[2026-03]** 📄 [AMA-Bench paper](https://arxiv.org/abs/2602.22769) accepted to **ICLR 2026 Memory Agent workshop** — **selected for oral presentation** 🎤 — and released on arXiv!
+- ✅ **[2026-03]** 📦 [Dataset](https://huggingface.co/datasets/AMA-bench/AMA-bench) released on Hugging Face
+- ✅ **[2026-03]** 🏆 [Leaderboard](https://huggingface.co/spaces/AMA-bench/AMA-bench-Leaderboard) launched on Hugging Face Spaces
 
 ---
 

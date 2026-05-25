@@ -22,6 +22,7 @@ outputs/*
 dataset/*
 results/*
 *.log
+*_tmp.txt
 skills/
 *_test/
 configs/

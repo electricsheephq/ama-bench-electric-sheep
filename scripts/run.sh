@@ -7,7 +7,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-results/openend}"
 # Launch vLLM server
 bash scripts/launch_vllm_32B.sh "$LLM_CONFIG"
 echo ""
-MAX_CONCURRENCY_EPISODES="${MAX_CONCURRENCY_EPISODES:-30}"  # Limit concurrency
+MAX_CONCURRENCY_EPISODES="${MAX_CONCURRENCY_EPISODES:-8}"  # Limit concurrency; keep low (≤ max_model_len/max_response_len) to avoid vllm queue saturation
 MAX_CONCURRENCY_QUESTIONS_PER_EPISODE="${MAX_CONCURRENCY_QUESTIONS_PER_EPISODE:-12}"  # Limit concurrency for questions within an episode
 METHOD="${METHOD:-ama_agent}"  # Available methods: longcontext (default), bm25, embedding
 
@@ -21,7 +21,7 @@ JUDGE_MAX_CONCURRENCY="${JUDGE_MAX_CONCURRENCY:-$((MAX_CONCURRENCY_EPISODES * MA
 METHOD_CONFIG="${METHOD_CONFIG:-configs/ama_agent.yaml}"  # Only needed for certain methods like ama_agent
 
 # Sampling / filtering (mutually exclusive)
-SAMPLES="${SAMPLES:-150}"        # e.g. SAMPLES=50 to randomly sample 50 episodes
+SAMPLES="${SAMPLES:-}"        # e.g. SAMPLES=50 to randomly sample 50 episodes
 DOMAINS="${DOMAINS:-}"        # e.g. DOMAINS="embodied_ai,software_engineer"
 
 # Build arguments

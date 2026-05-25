@@ -44,6 +44,7 @@ class ModelClient:
             kwargs.setdefault('host', config.get('vllm_host') or config.get('host', 'localhost'))
             kwargs.setdefault('port', config.get('vllm_port') or config.get('port', 8000))
 
+        self._timeout = float(config.get('timeout', 600.0))
         self.client = self._initialize_client(**kwargs)
 
     def _initialize_client(self, **kwargs):
@@ -51,24 +52,24 @@ class ModelClient:
         if self.provider == "vllm":
             from openai import OpenAI
             base_url = f"http://{kwargs.get('host', 'localhost')}:{kwargs.get('port', 8000)}/v1"
-            return OpenAI(base_url=base_url, api_key="EMPTY", timeout=180.0)
+            return OpenAI(base_url=base_url, api_key="EMPTY", timeout=self._timeout)
 
         elif self.provider == "openai":
             from openai import OpenAI
             # Use api_key from config if provided, otherwise will use OPENAI_API_KEY env var
             api_key = self.config.get("api_key") or os.getenv("OPENAI_API_KEY")
             if api_key:
-                return OpenAI(api_key=api_key, timeout=180.0)
+                return OpenAI(api_key=api_key, timeout=self._timeout)
             else:
                 # Let OpenAI SDK handle the API key (will use OPENAI_API_KEY env var)
-                return OpenAI(timeout=180.0)
+                return OpenAI(timeout=self._timeout)
 
         elif self.provider == "deepseek":
             from openai import OpenAI
             api_key = self.config.get("api_key") or os.getenv("DEEPSEEK_API_KEY")
             if not api_key:
                 raise ValueError("DeepSeek API key not found in config or DEEPSEEK_API_KEY environment variable")
-            return OpenAI(api_key=api_key, base_url="https://api.deepseek.com", timeout=180.0)
+            return OpenAI(api_key=api_key, base_url="https://api.deepseek.com", timeout=self._timeout)
 
         elif self.provider == "gemini":
             import google.generativeai as genai
@@ -201,7 +202,7 @@ class ModelClient:
                     print(f"Rate limit hit, retrying in {wait_time}s... (attempt {attempt}/{max_retries})")
                     time.sleep(wait_time)
                 else:
-                    wait_time = min(2 ** (attempt - 1), 10)
+                    wait_time = min(2 ** attempt, 30)
                     print(f"Error: {error_str}")
                     print(f"Retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})")
                     time.sleep(wait_time)

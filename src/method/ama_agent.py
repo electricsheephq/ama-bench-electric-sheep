@@ -109,6 +109,7 @@ class AMAAgentMethod(BaseMethod):
             call_llm_func=self._call_llm,
             chunk_size=self.chunk_size,
             session_size=self.session_size,
+            max_context_length=self.max_model_length - self.max_tokens,
             embed_engine=self.embedding_engine,
             causal=self.causal
         )

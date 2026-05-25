@@ -1,9 +1,9 @@
 set -e  # Exit on error
 
 # Parse command line arguments
-ANSWERS_FILE="results/openend/answers_Qwen_Qwen3-32B_openend_longcontext_20260306_003434.jsonl"
+ANSWERS_FILE="results/openend/answers__raid_lah003_models_Qwen3-32B_openend_ama_agent_20260419_125006.jsonl"
 TEST_FILE="${TEST_FILE:-dataset/test/open_end_qa_set.jsonl}"
-JUDGE_CONFIG="${JUDGE_CONFIG:-configs/llm_judge.yaml}"
+JUDGE_CONFIG="${JUDGE_CONFIG:-configs/qwen3-32B.yaml}"
 JUDGE_SERVER="${JUDGE_SERVER:-vllm}"
 OUTPUT_FILE=""
 

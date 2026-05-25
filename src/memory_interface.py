@@ -136,6 +136,23 @@ class MemoryQAInterface:
         retrieved_context = self.method.memory_retrieve(memory, question)
 
         mcq_mode = (self.subset == "mcq")
+
+        # Direct-answer fast path: if the retriever (ama_agent's sufficiency
+        # judgment) already produced an answer, skip the second LLM call.
+        direct_match = re.match(
+            r"<<<AMA_DIRECT_ANSWER>>>(.*?)<<<END_AMA_DIRECT_ANSWER>>>\n",
+            retrieved_context,
+            re.DOTALL,
+        )
+        if direct_match:
+            direct_answer = extract_final_answer(
+                f"###Answer: {direct_match.group(1).strip()}",
+                mcq_mode=mcq_mode,
+            )
+            return {
+                'final_answer': direct_answer,
+                'reasoning_trace': retrieved_context[direct_match.end():],
+            }
         if mcq_mode:
             instructions = (
                 "Select all correct options and respond using "
@@ -161,9 +178,9 @@ class MemoryQAInterface:
         match = re.search(r"Answer\[1\]:\s*(.+?)$", response, re.DOTALL)
         if match:
             answer_text = match.group(1).strip()
-            final_answer = extract_final_answer(f"###Answer: {answer_text}")
+            final_answer = extract_final_answer(f"###Answer: {answer_text}", mcq_mode=mcq_mode)
         else:
-            final_answer = extract_final_answer(response)
+            final_answer = extract_final_answer(response, mcq_mode=mcq_mode)
 
         return {
             'final_answer': final_answer,
@@ -207,9 +224,9 @@ class MemoryQAInterface:
             match = re.search(pattern, response, re.DOTALL)
             if match:
                 answer_text = match.group(1).strip()
-                final_answer = extract_final_answer(f"###Answer: {answer_text}")
+                final_answer = extract_final_answer(f"###Answer: {answer_text}", mcq_mode=mcq_mode)
             else:
-                final_answer = extract_final_answer(response)
+                final_answer = extract_final_answer(response, mcq_mode=mcq_mode)
             answer_list.append(final_answer)
 
         return answer_list

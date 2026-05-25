@@ -439,13 +439,17 @@ def fallback_retrieve(query: str, trajectory_text_json: str) -> str:
 
 
 def extract_state_memory_from_response(llm_response: str) -> Optional[str]:
-    """Extract state memory content from LLM response after **STATE_MEMORY** marker.
+    """Extract selected state memory fields from LLM response.
     
     Args:
         llm_response: The LLM response text
         
     Returns:
-        The content after **STATE_MEMORY** marker, or None if marker not found
+        A compact state memory string containing only:
+        - memory_summary
+        - turn_id
+        - env_state
+        Returns None if marker not found or no relevant fields are extracted.
     """
     if not llm_response:
         return None
@@ -456,14 +460,87 @@ def extract_state_memory_from_response(llm_response: str) -> Optional[str]:
     
     if marker_pos == -1:
         # Try case-insensitive search
-        marker_pos = llm_response.upper().find(marker)
+        marker_pos = llm_response.upper().find(marker.upper())
         if marker_pos == -1:
             return None
     
     # Extract everything after the marker
     state_mem = llm_response[marker_pos + len(marker):].strip()
-    
-    return state_mem if state_mem else None
+    if not state_mem:
+        return None
+
+    lines = state_mem.splitlines()
+
+    # Extract memory_summary (first occurrence).
+    memory_summary = None
+    summary_pattern = re.compile(r"^\s*memory_summary\s*:\s*(.*)$", re.IGNORECASE)
+    for line in lines:
+        m = summary_pattern.match(line)
+        if m:
+            memory_summary = f"memory_summary: {m.group(1).strip()}"
+            break
+
+    turn_pattern = re.compile(r"^\s*turn_id\s*:\s*(.+?)\s*$", re.IGNORECASE)
+    env_header_pattern = re.compile(r"^\s*env_state\s*:\s*$", re.IGNORECASE)
+    # Stop env_state capture when entering another top-level field.
+    top_level_field_pattern = re.compile(
+        r"^\s*(turn_id|memory_summary|object_states)\s*:",
+        re.IGNORECASE,
+    )
+
+    turn_blocks: List[str] = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        turn_match = turn_pattern.match(lines[i])
+        if not turn_match:
+            i += 1
+            continue
+
+        turn_id_val = turn_match.group(1).strip()
+        i += 1
+
+        env_lines: List[str] = []
+        found_env_header = False
+
+        while i < n:
+            if turn_pattern.match(lines[i]):
+                break
+
+            if not found_env_header and env_header_pattern.match(lines[i]):
+                found_env_header = True
+                i += 1
+                while i < n:
+                    if turn_pattern.match(lines[i]) or top_level_field_pattern.match(lines[i]):
+                        break
+                    env_lines.append(lines[i].rstrip())
+                    i += 1
+                continue
+
+            i += 1
+
+        block = [f"turn_id: {turn_id_val}"]
+        if found_env_header:
+            block.append("env_state:")
+            while env_lines and not env_lines[0].strip():
+                env_lines.pop(0)
+            while env_lines and not env_lines[-1].strip():
+                env_lines.pop()
+            if env_lines:
+                block.extend(env_lines)
+
+        turn_blocks.append("\n".join(block))
+
+    output_parts: List[str] = []
+    if memory_summary:
+        output_parts.append(memory_summary)
+    if turn_blocks:
+        if output_parts:
+            output_parts.append("")
+        output_parts.append("\n\n".join(turn_blocks))
+
+    compact_state_mem = "\n".join(output_parts).strip()
+    return compact_state_mem if compact_state_mem else None
 
 
 def extract_code_from_response(llm_response: str) -> str:
@@ -549,7 +626,7 @@ def _extract_chunks(
     return chunks
 
 
-_MAX_OBS_CHARS = 1500  # max observation chars per turn in formatted output
+_MAX_OBS_CHARS = 3000  # max observation chars per turn in formatted output
 
 def _format_chunks(chunks: List[Dict[str, Any]], max_obs_chars: int = _MAX_OBS_CHARS) -> str:
     """Format a list of chunk dicts into a readable string."""
@@ -838,4 +915,3 @@ def _run_keyword_search(
         shutil.rmtree(tmpdir, ignore_errors=True)
 
     return result
-

@@ -25,6 +25,93 @@ from .utils import (
 )
 
 
+# Sentinel used to pass a direct answer (produced by the sufficiency judgment)
+# back to memory_interface so it can short-circuit the answering LLM call.
+DIRECT_ANSWER_PREFIX = "<<<AMA_DIRECT_ANSWER>>>"
+DIRECT_ANSWER_SUFFIX = "<<<END_AMA_DIRECT_ANSWER>>>"
+
+
+def _extract_step_numbers(question: str, max_turn: Optional[int] = None) -> List[int]:
+    """Return turn indices the question explicitly references.
+
+    Supported phrasings (case-insensitive):
+      * single   : "step 5", "turn 5"
+      * range    : "between step 5 and step 10", "from step 5 to step 10",
+                   "steps 5 to 10", "steps 5-10", "steps 5–10", "turns 5..10"
+      * prefix   : "by step 26", "up to step 26", "until step 26", "through step 26"
+                   (only when max_turn is given; otherwise we don't know the upper bound)
+      * list     : "steps 3, 7, 12"
+    """
+    nums: set = set()
+
+    # Range forms: "between step X and step Y", "from step X to step Y", "steps X to Y"
+    for m in re.finditer(
+        r'\b(?:between|from)\s+(?:step|turn)s?\s+(\d+)\s+(?:and|to|through|until|\-|–)\s+(?:step|turn)?\s*(\d+)\b',
+        question, re.IGNORECASE,
+    ):
+        lo, hi = int(m.group(1)), int(m.group(2))
+        if lo > hi:
+            lo, hi = hi, lo
+        nums.update(range(lo, hi + 1))
+
+    # "steps X to Y" / "turns X to Y"
+    for m in re.finditer(
+        r'\b(?:step|turn)s?\s+(\d+)\s+(?:to|through|until|\-|–)\s+(\d+)\b',
+        question, re.IGNORECASE,
+    ):
+        lo, hi = int(m.group(1)), int(m.group(2))
+        if lo > hi:
+            lo, hi = hi, lo
+        nums.update(range(lo, hi + 1))
+
+    # "steps X-Y" / "steps X–Y" without word "to"
+    for m in re.finditer(
+        r'\b(?:step|turn)s?\s+(\d+)\s*[–\-]\s*(\d+)\b',
+        question, re.IGNORECASE,
+    ):
+        lo, hi = int(m.group(1)), int(m.group(2))
+        if lo > hi:
+            lo, hi = hi, lo
+        nums.update(range(lo, hi + 1))
+
+    # List form: "steps 3, 7, 12" / "turns 5, 8, 15" — capture the numbers
+    # that follow a "step(s)/turn(s)" introducer (comma- or "and"-separated).
+    for m in re.finditer(
+        r'\b(?:step|turn)s?\s+((?:\d+\s*(?:,|and|\s)\s*)+\d+)\b',
+        question, re.IGNORECASE,
+    ):
+        for n in re.findall(r'\d+', m.group(1)):
+            nums.add(int(n))
+
+    # Prefix forms: "by/until/up to/through step N" → 0..N inclusive
+    if max_turn is not None:
+        for m in re.finditer(
+            r'\b(?:by|until|up\s+to|through|before)\s+(?:step|turn)\s+(\d+)\b',
+            question, re.IGNORECASE,
+        ):
+            hi = min(int(m.group(1)), max_turn)
+            nums.update(range(0, hi + 1))
+
+    # Single references: "step N" / "turn N"
+    for m in re.finditer(r'\b(?:step|turn)\s+(\d+)\b', question, re.IGNORECASE):
+        nums.add(int(m.group(1)))
+
+    return sorted(nums)
+
+
+def _extract_inline_answer(sufficiency_response: str) -> Optional[str]:
+    """Extract the inline ANSWER from a SUFFICIENT sufficiency-judgment response."""
+    if not sufficiency_response:
+        return None
+    m = re.search(r'ANSWER\s*:\s*(.+?)\s*$', sufficiency_response, re.DOTALL | re.IGNORECASE)
+    if not m:
+        return None
+    answer = m.group(1).strip()
+    # Strip any trailing NEED_GRAPH/NEED_CODE noise if the model concatenated formats.
+    answer = re.split(r'\b(?:NEED_GRAPH|NEED_CODE)\s*:', answer, maxsplit=1)[0].strip()
+    return answer or None
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Public entry point
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -77,6 +164,21 @@ def memory_retrieve(
     mem: List[Dict[str, Any]] = _extract_chunks(trajectory, seed_indices)
     # Track seen turns from Stage 1 onwards to prevent duplicates across all stages.
     existing_turns: set = {c["turn"] for c in mem}
+    # Cumulative evidence starts from similarity retrieval and keeps growing.
+    extra_evidence_chunks: List[Dict[str, Any]] = list(mem)
+
+    # ── Stage 1b: Pin turns explicitly referenced by step/turn number ────────
+    # Supports single ("step 5"), range ("between step 5 and step 10"),
+    # prefix ("by step 26"), and list ("steps 3, 7, 12") forms.
+    _max_turn = max((t.get('turn_idx', -1) for t in trajectory), default=-1)
+    step_nums = _extract_step_numbers(question, max_turn=_max_turn if _max_turn >= 0 else None)
+    pinned_chunks: List[Dict[str, Any]] = []
+    if step_nums:
+        pinned_chunks = _extract_chunks(trajectory, step_nums)
+        pinned_new = [c for c in pinned_chunks if c["turn"] not in existing_turns]
+        mem.extend(pinned_new)
+        extra_evidence_chunks.extend(pinned_new)
+        existing_turns.update(c["turn"] for c in pinned_new)
 
     # ── Stage 2: Sufficiency judgment loop (up to 3 iterations) ──────────────
     # Each NEED_GRAPH response extends ``mem`` with the requested turns and the
@@ -105,15 +207,25 @@ def memory_retrieve(
         _, sufficiency_response = call_llm_func(sufficiency_prompt)
         resp_upper = (sufficiency_response or "").upper()
 
-        # SUFFICIENT — can answer immediately.
+        # SUFFICIENT — can answer immediately. Reuse the inline ANSWER to skip
+        # the second LLM call in memory_interface (problem 4 fix).
         if "SUFFICIENT" in resp_upper and "NEED_" not in resp_upper:
-            return _synthesize(
+            context = _synthesize(
                 state_mem_str=state_mem_str,
                 task=task,
                 chunks=mem,
+                extra_evidence_chunks=extra_evidence_chunks,
                 extra_evidence="",
+                pinned_chunks=pinned_chunks,
                 max_context_length=max_context_length,
             )
+            inline_answer = _extract_inline_answer(sufficiency_response or "")
+            if inline_answer:
+                return (
+                    f"{DIRECT_ANSWER_PREFIX}{inline_answer}{DIRECT_ANSWER_SUFFIX}\n"
+                    f"{context}"
+                )
+            return context
 
         if "NEED_CODE" in resp_upper:
             _need_code = True
@@ -125,6 +237,7 @@ def memory_retrieve(
         if not new_unique:
             break  # Nothing new to add; stop looping.
         mem.extend(new_unique)
+        extra_evidence_chunks.extend(new_unique)
         existing_turns.update(c["turn"] for c in new_unique)
 
     if _need_code:
@@ -153,7 +266,9 @@ def memory_retrieve(
         state_mem_str=state_mem_str,
         task=task,
         chunks=mem,
+        extra_evidence_chunks=extra_evidence_chunks,
         extra_evidence=extra_evidence,
+        pinned_chunks=pinned_chunks,
         max_context_length=max_context_length,
     )
 
@@ -167,11 +282,20 @@ def _synthesize(
     state_mem_str: str,
     task: str,
     chunks: List[Dict[str, Any]],
-    extra_evidence: str,
+    extra_evidence_chunks: Optional[List[Dict[str, Any]]] = None,
+    extra_evidence: str = "",
+    pinned_chunks: Optional[List[Dict[str, Any]]] = None,
     max_context_length: int = 114688,
 ) -> str:
-    """Stage 4: assemble all gathered evidence into the final context string."""
-    all_chunks = list(chunks) + _extract_chunks_from_extra_evidence(extra_evidence)
+    """Stage 4: assemble all gathered evidence into the final context string.
+
+    State-memory budget is allocated dynamically based on remaining space after
+    evidence is laid out, with a soft floor (10%) and ceiling (50%) so neither
+    side starves.
+    """
+    all_chunks = list(chunks)
+    if extra_evidence_chunks:
+        all_chunks.extend(extra_evidence_chunks)
 
     # Deduplicate by turn, then sort ascending.
     seen: Dict[int, Dict[str, Any]] = {}
@@ -190,16 +314,61 @@ def _synthesize(
             seen[turn] = c
     sorted_chunks = sorted(seen.values(), key=lambda x: x["turn"])
 
-    # Cap state_mem to at most 30% of the budget so Evidence has sufficient room.
-    _state_mem_budget = max(4096, int(max_context_length * 0.30))
+    # Build evidence body first so we can size state_mem against what's left.
+    evidence_body = _format_chunks(sorted_chunks)
+    code_search_section = (
+        f"\n\n# Code Search Result\n{extra_evidence}" if extra_evidence else ""
+    )
+
+    # Render pinned (step-N) chunks with FULL observation (no truncation) and
+    # put them in a separate, prominently-labelled section. The compressed
+    # state memory often disagrees with the raw turn — for point-lookup
+    # questions ("at step N, what action…?") the raw turn is authoritative.
+    pinned_section = ""
+    if pinned_chunks:
+        # Deduplicate by turn idx and sort ascending.
+        pinned_seen: Dict[int, Dict[str, Any]] = {}
+        for c in pinned_chunks:
+            t = c.get("turn")
+            if isinstance(t, int) and t not in pinned_seen:
+                pinned_seen[t] = c
+        pinned_sorted = sorted(pinned_seen.values(), key=lambda x: x["turn"])
+        if pinned_sorted:
+            # No obs truncation for pinned turns (cap individually only if huge).
+            pinned_body = _format_chunks(pinned_sorted, max_obs_chars=20000)
+            pinned_section = (
+                "# Pinned Turns (referenced explicitly in the question — TRUST THIS OVER STATE MEMORY)\n"
+                + pinned_body
+            )
+
+    # Dynamic state_mem budget: floor 10%, ceiling 50%, take what evidence
+    # doesn't consume. Reserve overhead for task line + section headers.
+    _overhead = len(task) + 1024
+    _floor = max(2048, int(max_context_length * 0.10))
+    _ceiling = max(_floor, int(max_context_length * 0.50))
+    _remaining = (
+        max_context_length
+        - len(evidence_body)
+        - len(code_search_section)
+        - len(pinned_section)
+        - _overhead
+    )
+    _state_mem_budget = max(_floor, min(_ceiling, _remaining))
     if len(state_mem_str) > _state_mem_budget:
         state_mem_str = truncate_trajectory_text(state_mem_str, _state_mem_budget)
 
-    parts = [
-        f"# State Memory\n{state_mem_str}",
-        f"# Task\n{task}",
-        f"# Evidence\n{_format_chunks(sorted_chunks)}",
-    ]
+    evidence_str = (
+        "The retrieved evidence from memory is as follows:\n\n"
+        + evidence_body
+        + code_search_section
+    )
+    parts = [f"# Task\n{task}"]
+    if pinned_section:
+        parts.append(pinned_section)
+    parts.extend([
+        f"# The State memory summary\n{state_mem_str}",
+        f"# The Retrieved Evidence: \n{evidence_str}",
+    ])
 
     context = "\n\n".join(parts)
     return truncate_trajectory_text(context, max_context_length)

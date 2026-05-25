@@ -4,7 +4,7 @@
 retrieval_mode: "embed"  # Options: "none", "bm25", "llm", "embed"
 temperature: 0
 chunk_size: 2048
-session_size: 16384
+session_size: 8192
 enable_tools: true
 casual: false
 
@@ -29,9 +29,9 @@ embedding_engine:
   runner: "pooling"
 
   # GPU selection
-  cuda_visible_devices: "6,7"
+  cuda_visible_devices: "2,4"
   tensor_parallel_size: 2
 
   # optional serving args for local embedding server
-  gpu_memory_utilization: 0.9
+  gpu_memory_utilization: 0.6
   startup_timeout: 120

@@ -135,6 +135,11 @@ result = {{
 3. The code should be self-contained and executable
 4. Store the final result in a variable named `result`
 
+**Robust matching guidelines (counting / search / aggregation):**
+- Use case-insensitive matching (`.lower()`) and search BOTH `action` and `observation` fields unless the question restricts to one. The same target may appear with different quoting/brackets — match a substring or use a regex.
+- Always return BOTH the count AND the list of matching turn indices (with a short evidence snippet) in `result`, so the answering LLM can verify and use exact turn ids.
+- Do not double-count the same turn for the same event.
+
 **Output Format:**
 You MUST format your response as follows:
 
@@ -147,66 +152,101 @@ Important: The code must be wrapped with **CODE**: marker followed by ```python 
 <think><\think>
 """
 
-COMPRESS_PROMPT_TEMPLATE = """You are analyzing a trajectory chunk to extract structured state information.
+COMPRESS_PROMPT_TEMPLATE = """You are presented with a section of agent trajectory (actions and observations). Compress it into a state memory that future readers can use to answer detailed questions about what happened.
 
 Task: {task}
 
-Trajectory Chunk:
+Trajectory Section:
 {trajectory_text}
 
 {previous_state_text}
 
-Your task is to extract and organize key state information from the trajectory.
+Identify KEY turns — turns where state meaningfully changed, a command/query/code was executed, an important result/value/schema/error appeared, or the agent shifted sub-goal. For each key turn record an env_state block with bullet keys that BEST FIT this turn. Common keys include: action, command, query, location, inventory, schema, sql, result, finding, error, change. Use whatever keys fit; do NOT force fields that do not apply, and do NOT dump unrelated context into a "change" field.
 
-You can use any format that works best (JSON, structured text, bullet points, etc.). For example:
+CRITICAL — copy these VERBATIM from the trajectory; never paraphrase or summarize:
+- commands, queries, code (SQL, shell, Python, function/tool calls)
+- identifiers: file paths, URLs, table/column/schema names, IDs, UI element ids and selectors, entity names
+- numeric values, counts, computed results, dates, response codes
+- error messages
 
-Example JSON format:
-{{
-  "objects": ["obj_1", "obj_2", "obj_3"],
-  "obj_state": {{
-    "obj_1": [
-      {{"t": 1, "action":"", "state": "exact description"}},
-      {{"t": 5, "action":"", "state": "exact description"}}
-    ]
-  }}
-}}
+Also write a one-line Memory Summary describing the section's overall progress.
 
-
-Key requirements:
-1. Identify ALL relevant objects/entities/locations mentioned
-2. Track their state changes at specific turns with EXACT details
-3. Include precise values, locations, and concrete actions
-4. Record exact error messages or feedback when relevant
-5. List events chronologically for each object
-
-After your analysis, output your state memory after the marker:
+Output everything after the marker below.
 
 **STATE_MEMORY**
-[Your state memory content here]
+
+memory_summary: key_turns=<turn ids>; key_objective=<main objective>; key_events=<critical events, commands, state changes, key results>
+
+turn_id: <turn number>
+env_state:
+- <key>: <value>
+- ...
+
+
+turn_id: <turn number>
+env_state:
+- <key>: <value>
+
+
+Constraints:
+(1) NEVER paraphrase identifiers, commands, queries, paths, URLs, numbers, or error messages — copy them verbatim.
+(2) Only record turns matching the KEY-turn criteria above.
+(3) Each env_state bullet should describe ONLY what is salient at that turn — do not repeat unchanged context from earlier turns and do not include unrelated environment dumps.
+(4) Use consistent entity / object names across all turns.
+(5) When previous state memory is provided, retain its details and integrate new findings.
+(6) memory_summary must include key_turns, key_objective, and key_events on a single line.
+(7) Do not invent facts. Do NOT write SQL queries, code, or commands that the agent did not actually execute in the trajectory — only record what the agent actually did. Do NOT add an "Explanation", "Analysis", or "Recommended Approach" section.
+(8) Output ONLY the state memory in the prescribed format after **STATE_MEMORY**. No prose, no markdown sections beyond memory_summary/turn_id/env_state.
 """
 
-CHECK_STATE_MEM_PROMPT_TEMPLATE = """You are analyzing whether the compressed state memory contains enough information to answer a question.
+CHUNK_SUFFICIENCY_JUDGMENT_PROMPT_TEMPLATE = """You are routing a question about an agent trajectory to the right retrieval stage.
 
-State Memory (compressed representation of the trajectory):
-{state_mem_str}
+Query: {query}
 
-Question: {query}
+Retrieved Turns (top-k from similarity search — this is NOT the full trajectory):
+{retrieved_chunks}
 
-Analyze if the state memory contains sufficient information to answer this question accurately.
+IMPORTANT: the retrieved turns above are a small subset of the full trajectory selected by similarity. Counts, lists, and aggregations computed over this subset WILL UNDERCOUNT and MUST NOT be used to answer "how many" / "count" / "list all" type questions.
 
-Consider:
-1. Does the state memory mention the relevant objects/entities in the question?
-2. Does it contain the specific information needed (states, relationships, actions)?
-3. Is the information detailed enough or just vague references?
+# Decision procedure — follow in order, stop at the first match
 
-Respond with ONLY "SUFFICIENT" or "NEED_RETRIEVAL" followed by a brief reason.
+Step 1. Does the question ask any of the following?
+  - "how many ...", "count of ...", "total number of ...", "frequency of ..."
+  - "how often", "how many times did X happen"
+  - "list all X", "find every X", "all distinct/unique X"
+  - sum / average / percentage / aggregation
+  - patterns spanning many turns ("redundant loop", "repeated actions", "every time X")
+  - a tally or breakdown of tool/command/action types across turns
+  → If YES, you MUST choose NEED_CODE. Do NOT answer from the retrieved subset even if it appears to contain examples — you will undercount. End here.
 
-Format:
-SUFFICIENT: [reason why state memory is enough]
-or
-NEED_RETRIEVAL: [what specific information is missing and needs to be retrieved]
+Step 2. Otherwise, can you answer the question COMPLETELY and ACCURATELY using only the retrieved turns above (plus general knowledge)?
+  - "Completely": every part of the question is addressed.
+  - "Accurately": you can point to specific turn(s) in the retrieved set that justify each part of the answer.
+  → If YES, choose SUFFICIENT and provide the full answer. End here.
 
-Response:"""
+Step 3. Are there specific other turns (adjacent, range, or by index) you need to inspect to answer? For example, the answer hinges on a turn that is referenced but not shown, or you need context around a retrieved turn.
+  → If YES, choose NEED_GRAPH and specify which turns. End here.
+
+Step 4. If you reach this step, the question requires reasoning over many parts of the trajectory that the similarity search did not surface.
+  → Choose NEED_CODE.
+
+# Output formats — use EXACTLY one of these, on its own line(s) at the start of your response
+
+SUFFICIENT
+ANSWER: <your complete and accurate answer>
+
+NEED_GRAPH: <spec>
+  where <spec> is one or more of:
+    turn_5 before=2 after=1
+    turn_8 before=3 after=0, turn_15 before=0 after=2
+    turns 5 to 10
+    turns 3 to 8, turns 15 to 20
+    turns 3, 7, 12, 18
+
+NEED_CODE: <short description of what to compute>
+
+Response:
+"""
 
 TOOL_USE_PROMPT_TEMPLATE = """You are helping retrieve relevant information from a trajectory to answer a question.
 

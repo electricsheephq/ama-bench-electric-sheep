@@ -1,28 +1,26 @@
-# Run end-to-end pipeline with a local vLLM server.
-# For API-based inference, use scripts/run_api.sh.
+# Run end-to-end pipeline against a remote API (OpenAI / Anthropic / Gemini, etc.).
+# For local vLLM inference, use scripts/run.sh.
 
-LLM_SERVER="vllm"
-LLM_CONFIG="${LLM_CONFIG:-configs/qwen3-32B.yaml}"
+LLM_SERVER="api"
+# Available API configs: configs/gpt-5.2.yaml, configs/gemini-2.5-pro.yaml, configs/llm_judge_api.yaml
+LLM_CONFIG="${LLM_CONFIG:-configs/gpt-5.2.yaml}"
 SUBSET="openend"
 TEST_DIR="${TEST_DIR:-dataset/test}"
 OUTPUT_DIR="${OUTPUT_DIR:-results/openend}"
 
-# Per-run log directory (vLLM log + pipeline stdout/stderr land here)
+# Per-run log directory (pipeline stdout/stderr lands here)
 RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)}"
 LOG_DIR="logs/${RUN_ID}"
 mkdir -p "$LOG_DIR"
 echo "Logs: $LOG_DIR"
 
-# Launch vLLM server (logs to $LOG_DIR/vllm_server.log)
-VLLM_LOG="$LOG_DIR/vllm_server.log" bash scripts/launch_vllm_32B.sh "$LLM_CONFIG"
-echo ""
-MAX_CONCURRENCY_EPISODES="${MAX_CONCURRENCY_EPISODES:-8}"  # Limit concurrency; keep low (≤ max_model_len/max_response_len) to avoid vllm queue saturation
+MAX_CONCURRENCY_EPISODES="${MAX_CONCURRENCY_EPISODES:-50}"  # Limit concurrency
 MAX_CONCURRENCY_QUESTIONS_PER_EPISODE="${MAX_CONCURRENCY_QUESTIONS_PER_EPISODE:-12}"  # Limit concurrency for questions within an episode
 METHOD="${METHOD:-ama_agent}"  # Available methods: longcontext (default), bm25, embedding, ama_agent
 
 # LLM-as-Judge configuration
-JUDGE_CONFIG="${JUDGE_CONFIG:-configs/qwen3-32B.yaml}"
-JUDGE_SERVER="${JUDGE_SERVER:-vllm}"
+JUDGE_CONFIG="${JUDGE_CONFIG:-configs/llm_judge_api.yaml}"
+JUDGE_SERVER="${JUDGE_SERVER:-api}"
 EVALUATE="${EVALUATE:-True}"  # Whether to evaluate answers
 JUDGE_MAX_CONCURRENCY="${JUDGE_MAX_CONCURRENCY:-$((MAX_CONCURRENCY_EPISODES * MAX_CONCURRENCY_QUESTIONS_PER_EPISODE))}"
 
@@ -68,6 +66,7 @@ fi
 
 # Run evaluation with LLM-as-Judge (tee output to logs)
 echo "Running OpenEnd evaluation with method: $METHOD"
+echo "LLM config: $LLM_CONFIG (server: $LLM_SERVER)"
 echo "LLM-as-Judge: $JUDGE_SERVER (config: $JUDGE_CONFIG)"
 echo "Evaluate: $EVALUATE"
 python src/run.py "${ARGS[@]}" 2>&1 | tee "$LOG_DIR/run.log"

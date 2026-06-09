@@ -19,6 +19,7 @@ AMA-Bench is a benchmark for evaluating agent memory on long-horizon agent traje
 - [📦 Dataset](#dataset)
 - [🚀 Quick Start](#quick-start)
 - [📊 Evaluation](#evaluation)
+- [🧪 Experiment Log](#experiment-log)
 - [🧩 Scripts](#scripts)
 - [🏆 Submit to Leaderboard](#submit-to-leaderboard)
 - [🏗️ Project Structure](#project-structure)
@@ -35,11 +36,12 @@ AMA-Bench is a benchmark for evaluating agent memory on long-horizon agent traje
 
 ## 🗞️ News
 
-- [ ] **[coming soon]** 🤖 AMA-Agent code release
-- ✅ **[2026-03]** 🚀 [AMA-Hub](https://github.com/AMA-Bench/AMA-Hub) repo launched
-- ✅ **[2026-03]** 📄 [AMA-Bench paper](https://arxiv.org/abs/2602.22769) is accepted by ICLR 2026 Memory Agent workshop and released on arXiv!
-- ✅  **[2026-03]** 📦 [Dataset](https://huggingface.co/datasets/AMA-bench/AMA-bench) released on Hugging Face
-- ✅  **[2026-03]** 🏆 [Leaderboard](https://huggingface.co/spaces/AMA-bench/AMA-bench-Leaderboard) launched on Hugging Face Spaces
+- ✅ **[2026-05]** 🎉 [AMA-Bench paper](https://arxiv.org/abs/2602.22769) accepted to **ICML 2026**!
+- ✅ **[2026-05]** 🤖 AMA-Agent code release
+- ✅ **[2026-03]** 🚀 repo launched
+- ✅ **[2026-03]** 📄 [AMA-Bench paper](https://arxiv.org/abs/2602.22769) accepted to **ICLR 2026 Memory Agent workshop** — **selected for oral presentation** 🎤 — and released on arXiv!
+- ✅ **[2026-03]** 📦 [Dataset](https://huggingface.co/datasets/AMA-bench/AMA-bench) released on Hugging Face
+- ✅ **[2026-03]** 🏆 [Leaderboard](https://huggingface.co/spaces/AMA-bench/AMA-bench-Leaderboard) launched on Hugging Face Spaces
 
 ---
 
@@ -76,6 +78,8 @@ Each memory method is implemented in two stages:
 ```bash
 git clone https://github.com/AMA-Bench/AMA-Hub.git
 cd AMA-Hub
+python -m venv ama_venv
+source ama_venv/bin/activate
 pip install -r requirements.txt
 ```
 
@@ -101,17 +105,21 @@ dataset/
 
 ## 🚀 Quick Start
 
-### ▶️ Run end-to-end evaluation
+### ▶️ Run end-to-end evaluation with local vLLM
 
 ```bash
 bash scripts/run.sh
 ```
 
-### 🤖 Run AMA-Agent
+Launches a local vLLM server (per [scripts/launch_vllm_32B.sh](scripts/launch_vllm_32B.sh)) and then runs generation + LLM-as-judge. All logs (vLLM server + pipeline output) are written to `logs/<timestamp>/`.
+
+### ☁️ Run end-to-end evaluation against an API
 
 ```bash
-bash scripts/ama_agent.sh
+bash scripts/run_api.sh
 ```
+
+Skips the vLLM launch and calls a remote API (OpenAI / Gemini / Anthropic, etc.) configured via `LLM_CONFIG`. Pipeline output is written to `logs/<timestamp>/run.log`.
 
 ### 💻 Run via CLI
 
@@ -211,19 +219,32 @@ Qwen3-32B shows systematic leniency bias, particularly on:
 
 ---
 
+## 🧪 Experiment Log
+
+Full per-run logs (model outputs, judge outputs, and pipeline traces) for our **AMA-Bench / AMA-Agent** experiments are mirrored to Google Drive:
+
+📂 [AMA-Bench / AMA-Agent experiment logs](https://drive.google.com/drive/folders/1Fn-gTiOJoSAXgXdnHa3F0-lRfYVsrQyJ?usp=sharing)
+
+Use these to reproduce reported numbers, inspect raw judge decisions, or compare your own runs against ours.
+
+---
+
 ## 🧩 Scripts
 
 | Script | Description |
 |---|---|
 | `scripts/launch_vllm_32B.sh` | Launch vLLM server from a YAML config |
-| `scripts/run.sh` | End-to-end generation + evaluation pipeline |
+| `scripts/run.sh` | End-to-end pipeline using a **local vLLM** server |
+| `scripts/run_api.sh` | End-to-end pipeline using a **remote API** (OpenAI / Gemini / Anthropic) |
 | `scripts/evaluate.sh` | Evaluate an existing answers JSONL with LLM-as-judge |
 | `scripts/run_cross_validation.sh` | Run cross-validation with multiple judges |
 | `scripts/cross_validate.py` | Compare evaluation results from two judges |
 
-**`launch_vllm_32B.sh`** — reads model and server settings from YAML, starts a vLLM OpenAI-compatible API, waits for the health endpoint, and logs to `vllm_server.log`.
+**`launch_vllm_32B.sh`** — reads model and server settings from YAML, starts a vLLM OpenAI-compatible API, waits for the health endpoint. The vLLM log path is controlled by `VLLM_LOG` (default `logs/vllm_server.log`).
 
-**`run.sh`** — launches the vLLM server if needed, runs answer generation with the configured method, then evaluates with LLM-as-judge.
+**`run.sh`** — local-vLLM pipeline. Launches the vLLM server if needed, runs answer generation with the configured method, then evaluates with LLM-as-judge. Per-run logs (including the vLLM server log) are written to `logs/<RUN_ID>/`.
+
+**`run_api.sh`** — API-based pipeline. Same generation + judge flow as `run.sh` but skips the vLLM launch and points `--llm-server` at `api`. Per-run logs are written to `logs/<RUN_ID>/`.
 
 **`evaluate.sh`** — standalone judge evaluation for pre-generated answer files, useful for re-evaluating with a different judge model.
 

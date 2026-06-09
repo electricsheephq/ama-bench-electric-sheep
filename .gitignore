@@ -1,5 +1,6 @@
 .claude/
 .vscode/
+ama_venv/
 .cursor/
 datasets/
 tmp/
@@ -21,6 +22,9 @@ outputs/*
 dataset/*
 results/*
 *.log
+*_tmp.txt
 skills/
 *_test/
 configs/
+skills/
+configs/qwen3-32B.yaml

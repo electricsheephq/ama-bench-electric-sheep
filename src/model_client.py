@@ -10,7 +10,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, asdict
 import yaml
 
-
 class ModelClient:
     """Unified client for different model providers."""
 
@@ -31,39 +30,47 @@ class ModelClient:
         self.provider = config.get('provider', '').lower()
         self.model = config.get('model', '')
         self.config = config
+        vllm_launch = config.get('vllm_launch', {})
+        self._max_model_len = (
+            config.get('max_model_len')
+            or vllm_launch.get('max_model_len', 131072)
+        )
 
         # For vllm server type, override provider
         if server_type == "vllm":
-            self.provider = "vllm"
+            self.provider = "custom"
             # Use host/port from kwargs or config (support both 'host' and 'vllm_host' naming)
-            kwargs.setdefault('host', config.get('vllm_host') or config.get('host', 'localhost'))
-            kwargs.setdefault('port', config.get('vllm_port') or config.get('port', 8000))
+            host = config.get('vllm_host') or config.get('host', 'localhost')
+            port = config.get('vllm_port') or config.get('port', 8000)
+            config["base_url"] = f"http://{host}:{port}/v1"
 
-        self.client = self._initialize_client(**kwargs)
+        self._timeout = float(config.get('timeout', 600.0))
+        self.client = self._initialize_client()
 
-    def _initialize_client(self, **kwargs):
+    def _initialize_client(self):
         """Initialize provider-specific client."""
-        if self.provider == "vllm":
+        if self.provider == "custom":
             from openai import OpenAI
-            base_url = f"http://{kwargs.get('host', 'localhost')}:{kwargs.get('port', 8000)}/v1"
-            return OpenAI(base_url=base_url, api_key="EMPTY")
+            base_url = self.config.get("base_url")
+            api_key = self.config.get("api_key", "EMPTY")
+            return OpenAI(base_url=base_url, api_key=api_key, timeout=self._timeout)
 
         elif self.provider == "openai":
             from openai import OpenAI
             # Use api_key from config if provided, otherwise will use OPENAI_API_KEY env var
             api_key = self.config.get("api_key") or os.getenv("OPENAI_API_KEY")
             if api_key:
-                return OpenAI(api_key=api_key)
+                return OpenAI(api_key=api_key, timeout=self._timeout)
             else:
                 # Let OpenAI SDK handle the API key (will use OPENAI_API_KEY env var)
-                return OpenAI()
+                return OpenAI(timeout=self._timeout)
 
         elif self.provider == "deepseek":
             from openai import OpenAI
             api_key = self.config.get("api_key") or os.getenv("DEEPSEEK_API_KEY")
             if not api_key:
                 raise ValueError("DeepSeek API key not found in config or DEEPSEEK_API_KEY environment variable")
-            return OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
+            return OpenAI(api_key=api_key, base_url="https://api.deepseek.com", timeout=self._timeout)
 
         elif self.provider == "gemini":
             import google.generativeai as genai
@@ -85,11 +92,14 @@ class ModelClient:
         else:
             raise ValueError(f"Unsupported provider: {self.provider}")
 
-    def query(self, prompt: str, temperature: float = 0.0, max_tokens: int = 4096, max_retries: int = 5, system: Optional[str] = None) -> str:
+    def query(self, prompt: str, temperature: float = 0.0, max_tokens: int = 4096, max_retries: int = 3, system: Optional[str] = None) -> str:
         """Query model with prompt with retry logic for rate limits."""
-        for attempt in range(max_retries):
+        import re as _re
+        _truncated = False
+        attempt = 0
+        while attempt < max_retries:
             try:
-                if self.provider in ["vllm", "deepseek"]:
+                if self.provider in ["custom", "deepseek"]:
                     response = self.client.chat.completions.create(
                         model=self.model,
                         messages=[{"role": "user", "content": prompt}],
@@ -97,8 +107,22 @@ class ModelClient:
                         max_tokens=max_tokens,
                     )
                     return response.choices[0].message.content.strip()
-                
+
                 elif self.provider == "openai":
+                    # gpt-5 family: hidden chain-of-thought tokens count against
+                    # max_completion_tokens, so the chat.completions path can
+                    # emit empty visible output even with a generous budget.
+                    # Use the Responses API with reasoning_effort=minimal, the
+                    # same convention as simpleqa / aa-lcr / Harbor parity.
+                    if self.model.startswith("gpt-5"):
+                        reasoning_effort = self.config.get("reasoning_effort", "minimal")
+                        response = self.client.responses.create(
+                            model=self.model,
+                            input=prompt,
+                            max_output_tokens=max_tokens,
+                            reasoning={"effort": reasoning_effort},
+                        )
+                        return (response.output_text or "").strip()
                     try:
                         response = self.client.chat.completions.create(
                             model=self.model,
@@ -130,22 +154,16 @@ class ModelClient:
                     return response.text.strip()
 
                 elif self.provider in ["anthropic", "claude"]:
-                    # Build request parameters
                     request_params = {
                         "model": self.model,
                         "messages": [{"role": "user", "content": prompt}],
                         "temperature": temperature,
                         "max_tokens": max_tokens,
                     }
-                    # Add system parameter if provided
                     if system:
                         request_params["system"] = system
-
                     response = self.client.messages.create(**request_params)
-
-                    # Handle response content
                     if not response.content:
-                        # Check if it's a refusal
                         if hasattr(response, 'stop_reason') and response.stop_reason == 'refusal':
                             raise ValueError(f"Claude refused to respond. This may be due to content policy. Stop reason: {response.stop_reason}")
                         raise ValueError(f"Empty response content from Claude API. Response: {response}")
@@ -155,27 +173,54 @@ class ModelClient:
 
                 else:
                     raise ValueError(f"Query not implemented for provider: {self.provider}")
-                    
+
             except Exception as e:
                 error_str = str(e)
                 # Don't retry on refusals or permanent errors
                 if "refused" in error_str.lower() or "refusal" in error_str.lower():
                     raise
+                # Handle context-length 400 errors: reduce max_tokens without consuming an attempt
+                is_context_length_error = (
+                    ("400" in error_str or "BadRequestError" in error_str)
+                    and ("context length" in error_str.lower() or "context_length" in error_str.lower()
+                         or "maximum context" in error_str.lower() or "input_tokens" in error_str.lower())
+                )
+                if is_context_length_error:
+                    if _truncated:
+                        raise
+                    _truncated = True
+                    m_limit = _re.search(r'maximum context length is (\d+)', error_str)
+                    m_input = _re.search(r'prompt contains at least (\d+) input tokens', error_str)
+                    if m_limit and m_input:
+                        model_limit = int(m_limit.group(1))
+                        input_tokens = int(m_input.group(1))
+                    else:
+                        model_limit = self._max_model_len
+                        input_tokens = len(prompt) // 4
+                    target_input_tokens = max(256, model_limit - max_tokens)
+                    scale = target_input_tokens / max(input_tokens, 1)
+                    new_char_len = max(200, min(int(len(prompt) * scale), len(prompt) - 1))
+                    head_len = int(new_char_len * 0.5)
+                    old_len = len(prompt)
+                    prompt = prompt[:head_len] + "\n...[truncated]...\n" + prompt[-(new_char_len - head_len):]
+                    print(f"Context length exceeded, truncating prompt {old_len} -> ~{len(prompt)} chars, retrying...")
+                    continue
+                # Don't retry on other 400/client errors (permanent)
+                if "400" in error_str or "BadRequestError" in error_str:
+                    raise
                 # Check if it's a rate limit error that should be retried
+                attempt += 1
+                if attempt >= max_retries:
+                    raise
                 if "rate" in error_str.lower() or "429" in error_str:
-                    if attempt < max_retries - 1:
-                        wait_time = 2 ** attempt  # Exponential backoff
-                        print(f"Rate limit hit, retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})")
-                        time.sleep(wait_time)
-                        continue
-                # For other errors, retry with exponential backoff
-                if attempt < max_retries - 1:
-                    wait_time = min(2 ** attempt, 10)  # Cap at 10 seconds
-                    print(f"Error: {error_str}")
-                    print(f"Retrying in {wait_time}s... (attempt {attempt + 2}/{max_retries})")
+                    wait_time = 2 ** (attempt - 1)
+                    print(f"Rate limit hit, retrying in {wait_time}s... (attempt {attempt}/{max_retries})")
                     time.sleep(wait_time)
                 else:
-                    raise
+                    wait_time = min(2 ** attempt, 30)
+                    print(f"Error: {error_str}")
+                    print(f"Retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(wait_time)
 
         raise RuntimeError(f"Failed after {max_retries} retries")
 
